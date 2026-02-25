@@ -1,5 +1,5 @@
-import { WelcomeScreen } from "@/screens/WelcomeScreen"
+import { AntigravityScreen } from "@/screens/AntigravityScreen"
 
 export default function Index() {
-  return <WelcomeScreen />
+  return <AntigravityScreen />
 }
