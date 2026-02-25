@@ -1,77 +1,174 @@
-# Welcome to your new ignited app!
+# React Native Worklet POC
 
-> The latest and greatest boilerplate for Infinite Red opinions
+> A visual proof-of-concept that demonstrates all **three JavaScript runtimes** available in a modern React Native app — and shows exactly what happens to each when the main JS thread is blocked.
 
-This is the boilerplate that [Infinite Red](https://infinite.red) uses as a way to test bleeding-edge changes to our React Native stack.
+---
 
-- [Quick start documentation](https://github.com/infinitered/ignite/blob/master/docs/boilerplate/Boilerplate.md)
-- [Full documentation](https://github.com/infinitered/ignite/blob/master/docs/README.md)
+## The Demo
+
+The app renders three animated balls side-by-side, each driven by a different runtime:
+
+| Column | Name | Runtime | What happens on JS freeze |
+|---|---|---|---|
+| 🍎 **Lazy Apple** | Main JS | React Native JS thread | **Freezes instantly** |
+| 🍎 **Rocket Apple** | UI Thread | Reanimated's UI worklet runtime | **Keeps animating** |
+| ⚗️ **Scientist** | Worker | `react-native-worklets` custom runtime | **Keeps computing & pulsing** |
+
+Tap **"JAM MAIN JS THREAD"** to block the JS thread for 3 seconds and watch the difference live.
+
+---
+
+## Blog Post
+
+This project accompanies the article:
+
+**[Stop Letting Your API Calls Kill Your UI — A Multithreading Guide to React Native Worklets](https://medium.com/@divyanshblog09/stop-letting-your-api-calls-kill-your-ui-a-multithreading-guide-to-react-native-worklets-d972816d02e0)**
+
+The article walks through the mental model, explains why the Reanimated UI thread survives a JS freeze, and dives into how `react-native-worklets` unlocks a fully separate background thread for CPU-heavy work.
+
+---
+
+## Architecture Overview
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  React Native App                                                │
+│                                                                  │
+│  ┌────────────────┐  ┌────────────────┐  ┌────────────────────┐ │
+│  │  Main JS Thread│  │  UI Thread     │  │  Worker Runtime    │ │
+│  │  (Hermes / JSC)│  │  (Reanimated)  │  │  (react-native-    │ │
+│  │                │  │                │  │   worklets)        │ │
+│  │  setState()    │  │  SharedValue   │  │  createWorklet-    │ │
+│  │  useEffect()   │  │  useAnimated-  │  │  Runtime()         │ │
+│  │  setInterval() │  │    Style()     │  │                    │ │
+│  │                │  │  useAnimated-  │  │  CPU work runs on  │ │
+│  │  ⚠ Freezes on  │  │    Props()     │  │  its own thread — │ │
+│  │  heavy sync    │  │                │  │  never blocks JS   │ │
+│  │  work          │  │  ✓ Survives JS │  │  or UI             │ │
+│  │                │  │  thread freeze │  │                    │ │
+│  └────────────────┘  └────────────────┘  └────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Runtime 1 — Main JS Thread (`LazyAppleColumn`)
+
+The position is computed inside a `setInterval` on the JS thread and pushed to React state via `setState`. When the JS thread is jammed, the interval stops firing and the ball freezes.
+
+### Runtime 2 — Reanimated UI Thread (`RocketAppleColumn`)
+
+The animation is driven by a `SharedValue` and `withRepeat(withTiming(...))`. Reanimated compiles the style worklets to native code that runs on the UI thread — completely independent of the JS thread. Freezing JS has zero effect.
+
+The apple rotation and the live angle label (an `AnimatedTextInput`) are both updated every frame without ever touching the JS bridge.
+
+### Runtime 3 — `react-native-worklets` Worker (`WorkerColumn`)
+
+`createWorkletRuntime` spins up a brand-new background thread. A `setInterval` inside that runtime loops over 2 million `Math.sqrt` calls to simulate CPU work, then increments a `Synchronizable` counter.
+
+On the UI thread, `useFrameCallback` polls the counter every frame and triggers a bounce animation when it changes. Neither the JS thread nor the UI thread are ever blocked by the heavy work.
+
+---
+
+## Key Concepts
+
+### `"worklet"` directive
+
+Any function annotated with `"worklet"` as its first statement is compiled by the Reanimated Babel plugin into a serialisable form that can be sent to — and executed on — the UI thread (or a custom worklet runtime) without going through the JS bridge.
+
+```ts
+const getAngle = (pos: number, maxHeight: number): number => {
+  "worklet"
+  return Math.round(interpolate(pos, [0, maxHeight], [0, 360]))
+}
+```
+
+### `SharedValue` vs `Synchronizable`
+
+| | `SharedValue` (Reanimated) | `Synchronizable` (react-native-worklets) |
+|---|---|---|
+| Shared between | JS ↔ UI thread | JS ↔ UI thread ↔ **any custom runtime** |
+| Typical use | Driving animated styles | Passing data between a worker and the UI thread |
+| Read on UI thread | `value` property in worklets | `getDirty()` in `useFrameCallback` |
+
+### `useFrameCallback`
+
+Reanimated's official hook for running arbitrary worklet logic every animation frame on the UI thread. Writes to `SharedValue`s here are picked up immediately by `useAnimatedStyle` / `useAnimatedProps` on the same frame.
+
+### `AnimatedTextInput` (live label trick)
+
+`useAnimatedProps` can write directly to a native component's props without going through React's render cycle. Wrapping `TextInput` lets us display a number that updates at 60 fps with zero JS involvement.
+
+---
+
+## Project Structure
+
+```
+src/
+├── components/
+│   └── antigravity/
+│       ├── LazyAppleColumn.tsx     # Runtime 1: Main JS thread animation
+│       ├── RocketAppleColumn.tsx   # Runtime 2: Reanimated UI thread animation
+│       └── WorkerColumn.tsx        # Runtime 3: react-native-worklets background thread
+└── screens/
+    └── antigravity/
+        └── AntigravityScreen.tsx   # Root screen — owns shared state & jam button
+```
+
+---
 
 ## Getting Started
 
+### Prerequisites
+
+- Node >= 20
+- pnpm >= 10
+- Xcode (for iOS) or Android Studio (for Android)
+
+### Install
+
 ```bash
 pnpm install
-pnpm run start
 ```
 
-To make things work on your local simulator, or on your phone, you need first to [run `eas build`](https://github.com/infinitered/ignite/blob/master/docs/expo/EAS.md). We have many shortcuts on `package.json` to make it easier:
+### Run (requires a dev build — see below)
 
 ```bash
-pnpm run build:ios:sim # build for ios simulator
-pnpm run build:ios:device # build for ios device
-pnpm run build:ios:prod # build for ios device
+pnpm start          # Start the Metro bundler
+pnpm ios            # Run on iOS simulator
+pnpm android        # Run on Android emulator
 ```
 
-### `./assets`
+> **Note:** `react-native-worklets` contains native code, so this app cannot run in Expo Go. You need a development build.
 
-This directory is designed to organize and store various assets, making it easy for you to manage and use them in your application. The assets are further categorized into subdirectories, including `icons` and `images`:
+### Build a development client
 
-```tree
-assets
-├── icons
-└── images
+```bash
+pnpm run build:ios:sim      # iOS simulator
+pnpm run build:ios:device   # iOS device
+pnpm run build:android:sim  # Android emulator
 ```
 
-**icons**
-This is where your icon assets will live. These icons can be used for buttons, navigation elements, or any other UI components. The recommended format for icons is PNG, but other formats can be used as well.
+---
 
-Ignite comes with a built-in `Icon` component. You can find detailed usage instructions in the [docs](https://github.com/infinitered/ignite/blob/master/docs/boilerplate/app/components/Icon.md).
+## Tech Stack
 
-**images**
-This is where your images will live, such as background images, logos, or any other graphics. You can use various formats such as PNG, JPEG, or GIF for your images.
+| Package | Purpose |
+|---|---|
+| `expo` ~54 | Managed workflow + dev tooling |
+| `expo-router` ~6 | File-based navigation |
+| `react-native-reanimated` ~4.1 | UI-thread animations (`SharedValue`, worklets) |
+| `react-native-worklets` 0.6 | Custom worklet runtimes (background threads) |
+| `react-native` 0.81 | Core framework |
 
-Another valuable built-in component within Ignite is the `AutoImage` component. You can find detailed usage instructions in the [docs](https://github.com/infinitered/ignite/blob/master/docs/Components-AutoImage.md).
+---
 
-How to use your `icon` or `image` assets:
+## Further Reading
 
-```typescript
-import { Image } from 'react-native';
+- [react-native-worklets — official docs](https://margelo.github.io/react-native-worklets/)
+- [react-native-reanimated — official docs](https://docs.swmansion.com/react-native-reanimated/)
+- [Blog post: Stop Letting Your API Calls Kill Your UI](https://medium.com/@divyanshblog09/stop-letting-your-api-calls-kill-your-ui-a-multithreading-guide-to-react-native-worklets-d972816d02e0)
 
-const MyComponent = () => {
-  return (
-    <Image source={require('assets/images/my_image.png')} />
-  );
-};
-```
+---
 
-## Running Maestro end-to-end tests
+## License
 
-Follow our [Maestro Setup](https://ignitecookbook.com/docs/recipes/MaestroSetup) recipe.
-
-## Next Steps
-
-### Ignite Cookbook
-
-[Ignite Cookbook](https://ignitecookbook.com/) is an easy way for developers to browse and share code snippets (or “recipes”) that actually work.
-
-### Upgrade Ignite boilerplate
-
-Read our [Upgrade Guide](https://ignitecookbook.com/docs/recipes/UpdatingIgnite) to learn how to upgrade your Ignite project.
-
-## Community
-
-⭐️ Help us out by [starring on GitHub](https://github.com/infinitered/ignite), filing bug reports in [issues](https://github.com/infinitered/ignite/issues) or [ask questions](https://github.com/infinitered/ignite/discussions).
-
-💬 Join us on [Slack](https://join.slack.com/t/infiniteredcommunity/shared_invite/zt-1f137np4h-zPTq_CbaRFUOR_glUFs2UA) to discuss.
-
-📰 Make our Editor-in-chief happy by [reading the React Native Newsletter](https://reactnativenewsletter.com/).
+MIT
