@@ -48,7 +48,7 @@ export const WorkerColumn: FC<Props> = ({ bounceHeight }) => {
         "worklet"
         setInterval(() => {
           // CPU-heavy work — runs on a dedicated thread, never touches JS or UI
-          for (let i = 0; i < 2_000_000; i++) {
+          for (let i = 0; i < 2000000; i++) {
             Math.sqrt(i)
           }
           bgCount.setBlocking((prev) => {
